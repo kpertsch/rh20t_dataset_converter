@@ -192,7 +192,7 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
             })
 
         # invalid episode check
-        if not episode:
+        if len(episode) < 10:
             return None
 
         # create output data sample
@@ -224,8 +224,8 @@ class Rh20t(MultiThreadedDatasetBuilder):
     RELEASE_NOTES = {
       '1.0.0': 'Initial release.',
     }
-    N_WORKERS = 10             # number of parallel workers for data conversion
-    MAX_PATHS_IN_MEMORY = 200  # number of paths converted & stored in memory before writing to disk
+    N_WORKERS = 40             # number of parallel workers for data conversion
+    MAX_PATHS_IN_MEMORY = 400  # number of paths converted & stored in memory before writing to disk
                                # -> the higher the faster / more parallel conversion, adjust based on avilable RAM
                                # note that one path may yield multiple episodes and adjust accordingly
     PARSE_FCN = _generate_examples      # handle to parse function from file paths to RLDS episodes
@@ -362,7 +362,13 @@ class Rh20t(MultiThreadedDatasetBuilder):
     def _generate_paths(self, path):
         """Generator of paths: RH20T format configuration/scene/camera"""
         paths = []
+        failed_on_transform = 0
+        failed_on_cams = 0
+        failed_on_scene = 0
+        from collections import defaultdict
+        cam_fail_counter = defaultdict(lambda: defaultdict(lambda: 0))
         for conf in sorted(os.listdir(path)):
+            if 'tar.gz' in conf or '.sh' in conf: continue
             for scene in sorted(os.listdir(os.path.join(path, conf))):
                 if '_human' in scene or 'calib' in scene:
                     continue
@@ -371,13 +377,15 @@ class Rh20t(MultiThreadedDatasetBuilder):
                    not os.path.exists(os.path.join(path, conf, scene, 'transformed', 'tcp_base.npy')) or \
                    not os.path.exists(os.path.join(path, conf, scene, 'transformed', 'gripper.npy')) or \
                    not os.path.exists(os.path.join(path, conf, scene, 'transformed', 'force_torque.npy')):
-                    continue
+                       failed_on_transform += 1
+                       continue
                 try:
                     task_id = int(scene[5:9])
                     user_id = int(scene[15:19])
                     scene_id = int(scene[26:30])
                     cfg_id = int(scene[35:39])
                 except Exception:
+                    failed_on_scene += 1
                     continue
                 cams = CFG_TO_CAM[f"cfg{cfg_id}"].values()
                 cams_in_dir = os.listdir(os.path.join(path, conf, scene))
@@ -387,18 +395,28 @@ class Rh20t(MultiThreadedDatasetBuilder):
                       not os.path.exists(os.path.join(path, conf, scene, f"cam_{cam}", 'color.mp4')) or \
                       not os.path.exists(os.path.join(path, conf, scene, f"cam_{cam}", 'timestamps.npy')):
                         valid = False
-                        break
+                        cam_name = list(CFG_TO_CAM[f"cfg{cfg_id}"].keys())[list(CFG_TO_CAM[f"cfg{cfg_id}"].values()).index(cam)]
+                        cam_fail_counter[cfg_id][cam_name] += 1
                 if not valid:
+                    failed_on_cams += 1
                     continue
 
                 # passed all tests, append path
                 paths.append(os.path.join(path, conf, scene))
+        print("Missing transform: ", failed_on_transform)
+        print("Missing cameras: ", failed_on_cams)
+        print("Can't parse scene: ", failed_on_scene)
+        summed_cams = defaultdict(lambda: 0)
+        for cfg in cam_fail_counter:
+            for cam in cam_fail_counter[cfg]:
+                summed_cams[cam] += cam_fail_counter[cfg][cam]
+        print("Missing the following cameras: ", dict(summed_cams))
         return paths
 
     def _split_paths(self):
         """Define filepaths for data splits."""
+        paths = self._generate_paths(path=DATA_PATH)
+        print(f"Converting {len(paths)} episodes.")
         return {
-            'train': self._generate_paths(
-                path=DATA_PATH,
-            ),
+            'train': paths
         }
