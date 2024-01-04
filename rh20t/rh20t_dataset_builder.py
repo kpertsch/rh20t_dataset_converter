@@ -37,63 +37,91 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
         scene_id = int(scene_name[26:30])
         cfg_id = int(scene_name[35:39])
         # 0. load metadata
-        with open(os.path.join(episode_path, 'metadata.json'), 'r') as f:
-            meta = json.load(f)
-        finish_timestamp = meta['finish_time']
-        rating = meta['rating']
+        try:
+            with open(os.path.join(episode_path, 'metadata.json'), 'r') as f:
+                meta = json.load(f)
+            finish_timestamp = meta['finish_time']
+            rating = meta['rating']
+        except Exception:
+            print(f"Failed to load metadata for {episode_path}")
+            return None
 
         # 1. load camera data and timestamps
         images = {}
         timestamps = {}
-        for camera_name in CFG_TO_CAM[f"cfg{cfg_id}"]:
-            cam_path = os.path.join(episode_path, f"cam_{CFG_TO_CAM[f'cfg{cfg_id}'][camera_name]}")
-            timestamps[camera_name] = np.array(
-                np.load(os.path.join(cam_path, 'timestamps.npy'), allow_pickle=True).item()['color']
-            )
-            cap = cv2.VideoCapture(os.path.join(cam_path, 'color.mp4'))
-            cnt = 0
-            images[camera_name] = {}
-            while True:
-                ret, frame = cap.read()
-                if ret:
-                    frame = cv2.resize(frame, (TARGET_RES[1], TARGET_RES[0]))
-                    frame = np.array(frame).astype(np.uint8)
-                    frame = frame[..., ::-1]    # flip channel order bc OpenCV, oh well
-                    images[camera_name][timestamps[camera_name][cnt]] = frame
-                    cnt += 1
-                else:
-                    break
-            cap.release()
+        try:
+            for camera_name in CFG_TO_CAM[f"cfg{cfg_id}"]:
+                cam_path = os.path.join(episode_path, f"cam_{CFG_TO_CAM[f'cfg{cfg_id}'][camera_name]}")
+                timestamps[camera_name] = np.array(
+                    np.load(os.path.join(cam_path, 'timestamps.npy'), allow_pickle=True).item()['color']
+                )
+                cap = cv2.VideoCapture(os.path.join(cam_path, 'color.mp4'))
+                cnt = 0
+                images[camera_name] = {}
+                while True:
+                    ret, frame = cap.read()
+                    if ret:
+                        frame = cv2.resize(frame, (TARGET_RES[1], TARGET_RES[0]), interpolation=cv2.INTER_AREA)
+                        frame = np.array(frame).astype(np.uint8)
+                        frame = frame[..., ::-1]    # flip channel order bc OpenCV, oh well
+                        images[camera_name][timestamps[camera_name][cnt]] = frame
+                        cnt += 1
+                    else:
+                        break
+                cap.release()
+        except Exception:
+            print(f"Failed image extraction for {episode_path}")
+            return None
 
         # 3. load transformed data
         # 3.1 tcp w.r.t. camera
-        tcps = np.load(os.path.join(episode_path, 'transformed', 'tcp.npy'), allow_pickle=True).item()
-        tcps = transform_timestamp_key(tcps)
+        try:
+            tcps = np.load(os.path.join(episode_path, 'transformed', 'tcp.npy'), allow_pickle=True).item()
+            tcps = transform_timestamp_key(tcps)
 
-        # 3.2 tcp w.r.t. base
-        tcps_base = transform_timestamp_key(
-            np.load(os.path.join(episode_path, 'transformed', 'tcp_base.npy'), allow_pickle=True).item())
+            # 3.2 tcp w.r.t. base
+            tcps_base = transform_timestamp_key(
+                np.load(os.path.join(episode_path, 'transformed', 'tcp_base.npy'), allow_pickle=True).item())
+        except Exception:
+                print(f"Failed to load TCP for {episode_path}")
+                return None
 
         # 3.4 force/torque w.r.t. base
         if os.path.exists(os.path.join(episode_path, 'transformed', 'force_torque_base.npy')):
-            fts_base = transform_timestamp_key(
-                np.load(os.path.join(episode_path, 'transformed', 'force_torque_base.npy'), allow_pickle=True).item())
+            try:
+                fts_base = transform_timestamp_key(
+                    np.load(os.path.join(episode_path, 'transformed', 'force_torque_base.npy'), allow_pickle=True).item())
+            except Exception:
+                print(f"Failed to load force torque for {episode_path}")
+                return None
         else:
             fts_base = None
 
         # 3.5 gripper
-        grippers = np.load(os.path.join(episode_path, 'transformed', 'gripper.npy'), allow_pickle=True).item()
+        try:
+            grippers = np.load(os.path.join(episode_path, 'transformed', 'gripper.npy'), allow_pickle=True).item()
+        except Exception:
+            print(f"Failed to load gripper info for {episode_path}")
+            return None
 
         # 4. load joint data (if any)
         if os.path.exists(os.path.join(JOINT_INFO_PATH, cfg_name, scene_name, 'transformed', 'joint.npy')):
-            joints = np.load(
-                os.path.join(JOINT_INFO_PATH, cfg_name, scene_name, 'transformed', 'joint.npy'),
-                allow_pickle=True).item()
+            try:
+                joints = np.load(
+                    os.path.join(JOINT_INFO_PATH, cfg_name, scene_name, 'transformed', 'joint.npy'),
+                    allow_pickle=True).item()
+            except Exception:
+                print(f"Failed to load joint info for {episode_path}")
+                return None
         else:
             joints = None
 
         # 5. language instruction
-        language_instruction = TASK_DESCRIPTION[scene_name[:9]]["task_description_english"]
+        try:
+            language_instruction = TASK_DESCRIPTION[scene_name[:9]]["task_description_english"]
+        except Exception:
+            print(f"Failed language instruction extraction for {episode_path}")
+            return None
 
         # 6. timestamps: find time aligned camera timestamps
         sync_timestamps = {cam: [] for cam in CAMS_TO_CONVERT}
@@ -160,39 +188,44 @@ def _generate_examples(paths) -> Iterator[Tuple[str, Any]]:
                 gripper_action = last_gripper_action
             last_gripper_action = gripper_action
 
-            episode.append({
-                'observation': {
-                    **{
-                        f"image_{cam}": images[cam][sync_timestamps[cam][i]]
-                        for cam in CAMS_TO_CONVERT
+            try:
+                episode.append({
+                    'observation': {
+                        **{
+                            f"image_{cam}": images[cam][sync_timestamps[cam][i]]
+                            for cam in CAMS_TO_CONVERT
+                        },
+                        **{
+                            f"tcp_{cam}": tcp_per_cam[cam]
+                            for cam in CAMS_TO_CONVERT
+                        },
+                        'tcp_base': tcp_base,
+                        'joint': joint,
+                        'joint_vel': joint_vel,
+                        'ft_robot_base': ft_robot_base,
+                        'ft_raw_base': ft_raw_base,
+                        'ft_zeroed_base': ft_zeroed_base,
+                        'gripper_width': gripper_width,
+                        'timestamp': ts
                     },
-                    **{
-                        f"tcp_{cam}": tcp_per_cam[cam]
-                        for cam in CAMS_TO_CONVERT
+                    'action': {
+                        'tcp_base': tcp_base_action,
+                        'gripper': gripper_action
                     },
-                    'tcp_base': tcp_base,
-                    'joint': joint,
-                    'joint_vel': joint_vel,
-                    'ft_robot_base': ft_robot_base,
-                    'ft_raw_base': ft_raw_base,
-                    'ft_zeroed_base': ft_zeroed_base,
-                    'gripper_width': gripper_width,
-                    'timestamp': ts
-                },
-                'action': {
-                    'tcp_base': tcp_base_action,
-                    'gripper': gripper_action
-                },
-                'discount': 1.0,
-                'reward': float(rating >= 2 and is_last),
-                'is_first': i == 0,
-                'is_last': is_last,
-                'is_terminal': is_last,
-                'language_instruction': language_instruction,
-            })
+                    'discount': 1.0,
+                    'reward': float(rating >= 2 and is_last),
+                    'is_first': i == 0,
+                    'is_last': is_last,
+                    'is_terminal': is_last,
+                    'language_instruction': language_instruction,
+                })
+            except Exception:
+                print(f"Failed episode assembly for {episode_path}")
+                return None
 
         # invalid episode check
         if len(episode) < 10:
+            print(f"Too few steps in {episode_path}")
             return None
 
         # create output data sample
